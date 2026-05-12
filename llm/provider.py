@@ -3,7 +3,7 @@
 
 # # 1. Initialize the client using Gemini's OpenAI-compatible endpoint
 # client = OpenAI(
-#     api_key="AIzaSyCfB7Hc93naiw3QFs1o_cIEejcn7OmlSBk",
+#     api_key="YOUR_GEMINI_API_KEY",
 #     base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
 # )
 
