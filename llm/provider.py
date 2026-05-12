@@ -57,7 +57,7 @@ from openai import OpenAI
 class GeminiProvider:
     def __init__(self):
         # We fetch the key from environment variables for safety
-        api_key = "AIzaSyCfB7Hc93naiw3QFs1o_cIEejcn7OmlSBk"
+        api_key = os.getenv("gemini_key")
         if not api_key:
             raise ValueError("GEMINI_API_KEY is not set in environment variables.")
 
