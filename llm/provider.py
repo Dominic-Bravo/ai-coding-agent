@@ -53,11 +53,14 @@
 
 import os
 from openai import OpenAI
+from dotenv import load_dotenv
+
+load_dotenv()  # Load environment variables from .env file
 
 class GeminiProvider:
     def __init__(self):
         # We fetch the key from environment variables for safety
-        api_key = os.getenv("gemini_key")
+        api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             raise ValueError("GEMINI_API_KEY is not set in environment variables.")
 
@@ -65,7 +68,7 @@ class GeminiProvider:
             api_key=api_key,
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
         )
-        self.model = "gemini-2.5-flash-lite" # Latest stable for agents
+        self.model = "gemini-2.5-flash" # Latest stable for agents
 
     def get_role_instructions(self, role_name):
         """Storage for different agent personalities."""
@@ -76,9 +79,22 @@ class GeminiProvider:
                 "Output only a structured TODO list in Markdown."
             ),
             "engineer": (
-                "You are the Lead Software Engineer. Your stack is FLEXIBLE. "
-                "You MUST read the Architect's plan carefully and use ONLY what the archictect say, "
-                "languages, and libraries defined in that plan. Do not default to your own preferences."
+                "You are the Lead Engineer. "
+                "Your technology stack is STRICTLY determined by the Architect's plan. "
+                "You MUST carefully analyze the Architect's instructions before generating any code. "
+                "Only use the programming languages, frameworks, libraries, architectures, tools, "
+                "and design patterns explicitly defined in the plan. "
+                "Do NOT introduce your own preferred technologies, alternatives, or assumptions. "
+                "Your role is to implement the system exactly as specified. "
+                "Generate clean, production-ready, well-structured code with clear inline comments "
+                "and maintainable architecture. "
+                "Focus on correctness, scalability, readability, and modularity. "
+                "If the plan is unclear or missing implementation details, infer conservatively "
+                "without changing the intended stack or architecture. "
+                "Adapt your coding style, abstractions, and implementation depth based on the project type, "
+                "complexity, and role requirements. "
+                "You should behave like a specialized fine-tuned engineer for the exact stack "
+                "and architecture provided in the Architect's plan."
             ),
             "reviewer": (
                 "You are the Code Reviewer. Your job is to look for bugs, security "

@@ -22,14 +22,14 @@ def main():
         plan = ai.ask("architect", f"Plan this project: {user_request}")
     console.print(Panel(plan, title="Architect's Blueprint", border_style="yellow"))
 
-    # STEP 2: Dom Explains the Vibe
-    with console.status("[bold green]Dom is checking context..."):
-        commentary = ai.ask("dom", f"How does this fit our stack? Project: {user_request}")
-    console.print(Panel(commentary, title="Dom's Thoughts", border_style="green"))
+    # # STEP 2: Dom Explains the Vibe
+    # with console.status("[bold green]Dom is checking context..."):
+    #     commentary = ai.ask("dom", f"How does this fit our stack? Project: {user_request}")
+    # console.print(Panel(commentary, title="Dom's Thoughts", border_style="green"))
 
     # STEP 3: The Engineer Starts Coding (Example: First task)
     with console.status("[bold blue]Engineer is writing code..."):
-        engineer_code = ai.ask("lead software engineer", f"Based on this plan, write the main entry point: {plan}")
+        engineer_code = ai.ask("lead engineer", f"Based on this plan, write the main entry point: {plan}")
     console.print(Panel(engineer_code, title="Engineer's Output", border_style="blue"))
     
     # Inside manager.py
