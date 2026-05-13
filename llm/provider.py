@@ -52,10 +52,30 @@
 
 
 import os
-from openai import OpenAI
+import time
+
 from dotenv import load_dotenv
+from openai import APIConnectionError, APITimeoutError, APIStatusError, OpenAI, RateLimitError
 
 load_dotenv()  # Load environment variables from .env file
+
+# When Gemini returns 503 UNAVAILABLE ("high demand"), it is usually temporary.
+# What to do: wait and retry; use exponential backoff when automating; if it persists,
+# set GEMINI_MODEL to another documented Gemini id (see Google AI docs) and retry.
+
+_DEFAULT_MODEL = "gemini-2.5-flash"
+_MAX_RETRIES = 6
+_BASE_DELAY_SEC = 1.0
+_MAX_DELAY_SEC = 30.0
+
+
+def _is_retryable_api_error(exc: BaseException) -> bool:
+    if isinstance(exc, (APIConnectionError, APITimeoutError, RateLimitError)):
+        return True
+    if isinstance(exc, APIStatusError):
+        return exc.status_code in (408, 429, 500, 502, 503, 504)
+    return False
+
 
 class GeminiProvider:
     def __init__(self):
@@ -68,7 +88,27 @@ class GeminiProvider:
             api_key=api_key,
             base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
         )
-        self.model = "gemini-2.5-flash" # Latest stable for agents
+        self.model = (os.getenv("GEMINI_MODEL") or _DEFAULT_MODEL).strip()
+
+    def _chat_completion_create(self, messages: list[dict], *, temperature: float):
+        """Call chat.completions.create with exponential backoff on transient failures."""
+        delay = _BASE_DELAY_SEC
+        last_exc: BaseException | None = None
+        for attempt in range(_MAX_RETRIES):
+            try:
+                return self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    temperature=temperature,
+                )
+            except Exception as e:
+                last_exc = e
+                if attempt == _MAX_RETRIES - 1 or not _is_retryable_api_error(e):
+                    raise
+                time.sleep(min(delay, _MAX_DELAY_SEC))
+                delay = min(delay * 2.0, _MAX_DELAY_SEC)
+        assert last_exc is not None
+        raise last_exc
 
     def get_role_instructions(self, role_name):
         """Storage for different agent personalities."""
@@ -127,10 +167,9 @@ class GeminiProvider:
             {"role": "user", "content": task_prompt}
         ]
 
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            temperature=0.2 # Lower temperature for more consistent agent behavior
+        response = self._chat_completion_create(
+            messages,
+            temperature=0.2,  # Lower temperature for more consistent agent behavior
         )
         return response.choices[0].message.content
     
@@ -152,11 +191,7 @@ class GeminiProvider:
         ]
 
         try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=0.3
-            )
+            response = self._chat_completion_create(messages, temperature=0.3)
             return response.choices[0].message.content
         except Exception as e:
             return f"Error: {str(e)}"
