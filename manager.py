@@ -12,7 +12,8 @@ from rich.console import Console
 from rich.panel import Panel
 
 from dev_runner import RunResult, run_dev_command, validate_dev_command
-from llm.provider import GeminiProvider
+from llm.errors import LLMRequestError
+from llm.provider import create_llm_provider
 from project_session import (
     SESSION_DIRNAME,
     artifacts_to_payload,
@@ -277,6 +278,12 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Project directory to scan and write (default: MICRO_AGENT_PROJECT env or cwd).",
     )
     p.add_argument(
+        "--provider",
+        choices=["gemini", "openai", "anthropic"],
+        default=None,
+        help="LLM backend: skip the startup menu (same as MICRO_AGENT_PROVIDER).",
+    )
+    p.add_argument(
         "--fresh",
         action="store_true",
         help="Ignore any saved session in this project folder and start from scratch.",
@@ -337,6 +344,8 @@ def main(argv: list[str] | None = None) -> None:
     if args.fresh:
         clear_session(project_root)
 
+    ai = create_llm_provider(console, provider_override=args.provider)
+
     structure = describe_project_tree(project_root)
     md_bundle, md_count = collect_project_markdown_docs(project_root)
     md_digest_for_engineer = md_bundle
@@ -350,8 +359,6 @@ def main(argv: list[str] | None = None) -> None:
             border_style="cyan",
         )
     )
-
-    ai = GeminiProvider()
 
     console.print(Panel("[bold magenta]Multi-Agent Coding System Active[/bold magenta]"))
     console.print(
@@ -532,4 +539,14 @@ def main(argv: list[str] | None = None) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except LLMRequestError as e:
+        console.print(
+            Panel(
+                str(e),
+                title="LLM request problem",
+                border_style="red",
+            )
+        )
+        raise SystemExit(1) from e

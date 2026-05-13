@@ -11,6 +11,7 @@ dependencies = [
     "openai>=1.0",
     "rich>=13.0",
     "python-dotenv>=1.0",
+    "anthropic>=0.34",
 ]
 
 [project.optional-dependencies]
