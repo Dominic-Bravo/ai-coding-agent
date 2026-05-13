@@ -3,12 +3,15 @@ from __future__ import annotations
 import argparse
 import os
 import re
+import shlex
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel
 
+from dev_runner import RunResult, run_dev_command, validate_dev_command
 from llm.provider import GeminiProvider
 from workspace import describe_project_tree, write_files_from_agent_output
 
@@ -159,6 +162,53 @@ def _print_write_results(written: list[str], errors: list[str]) -> None:
         console.print(f"[red]✗ {e}[/red]")
 
 
+def _resolve_project_root(project_arg: Path | None) -> Path:
+    raw = project_arg or Path(os.environ.get("MICRO_AGENT_PROJECT", "."))
+    project_root = raw.expanduser().resolve()
+    if not project_root.exists():
+        project_root.mkdir(parents=True, exist_ok=True)
+        console.print(
+            f"[yellow]Created project directory:[/yellow] {project_root}"
+        )
+    return project_root
+
+
+def _print_run_result(result: RunResult) -> None:
+    cmd = " ".join(result.argv)
+    body = f"[bold]{cmd}[/bold]\n\n[bold]stdout[/bold]\n{result.stdout}\n\n[bold]stderr[/bold]\n{result.stderr}"
+    border = "green" if result.returncode == 0 else "red"
+    console.print(
+        Panel(body, title=f"dev-run exit {result.returncode}", border_style=border)
+    )
+
+
+def _prompt_optional_dev_run(project_root: Path) -> None:
+    console.print(
+        "[dim]Dev-run allowlist: python/py/pytest, npm|pnpm|yarn (test|run|exec|start only), "
+        "go/cargo/dotnet/uv/make/deno/bun (see dev_runner.py), pip show|list|check|freeze, "
+        "poetry run <…>. No shell, no pipes, cwd is the project folder.[/dim]"
+    )
+    line = console.input(
+        "[cyan]Run a dev command in this project? [Enter to skip] [/cyan]"
+    ).strip()
+    if not line:
+        return
+    try:
+        parts = shlex.split(line, posix=os.name != "nt")
+    except ValueError as e:
+        console.print(f"[red]Could not parse command:[/red] {e}")
+        return
+    if not parts:
+        return
+    ok, msg = validate_dev_command(parts)
+    if not ok:
+        console.print(f"[red]Command not allowed:[/red] {msg}")
+        return
+    with console.status("[bold]Running dev command..."):
+        result = run_dev_command(project_root, parts)
+    _print_run_result(result)
+
+
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Multi-agent CLI that can read a project tree and write files into it.",
@@ -170,18 +220,59 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         default=None,
         help="Project directory to scan and write (default: MICRO_AGENT_PROJECT env or cwd).",
     )
+    p.add_argument(
+        "--no-dev-prompt",
+        action="store_true",
+        help="After the agent finishes, do not offer the optional dev-run prompt.",
+    )
     return p.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> None:
-    args = parse_args(argv)
-    raw = args.project or Path(os.environ.get("MICRO_AGENT_PROJECT", "."))
-    project_root = raw.expanduser().resolve()
-    if not project_root.exists():
-        project_root.mkdir(parents=True, exist_ok=True)
-        console.print(
-            f"[yellow]Created project directory:[/yellow] {project_root}"
+def cmd_dev_run_main(argv: list[str]) -> None:
+    parser = argparse.ArgumentParser(
+        prog="manager.py dev-run",
+        description="Run an allowlisted development command in the project directory (no shell).",
+    )
+    parser.add_argument(
+        "-p",
+        "--project",
+        type=Path,
+        default=None,
+        help="Project directory (cwd for the command). Default: MICRO_AGENT_PROJECT or cwd.",
+    )
+    parser.add_argument(
+        "cmd",
+        nargs=argparse.REMAINDER,
+        help="Command argv, typically after -- (example: -- python -m pytest -q)",
+    )
+    args = parser.parse_args(argv)
+    cmd = list(args.cmd)
+    while cmd and cmd[0] == "--":
+        cmd.pop(0)
+    if not cmd:
+        parser.error(
+            "Missing command. Example: python manager.py dev-run -p . -- python -m pytest -q"
         )
+    project_root = _resolve_project_root(args.project)
+    ok, msg = validate_dev_command(cmd)
+    if not ok:
+        console.print(f"[red]Command not allowed:[/red] {msg}")
+        raise SystemExit(2)
+    console.print(Panel(f"[bold]cwd[/bold] {project_root}\n[bold]cmd[/bold] {' '.join(cmd)}", title="dev-run"))
+    result = run_dev_command(project_root, cmd)
+    _print_run_result(result)
+    if result.returncode != 0:
+        raise SystemExit(result.returncode)
+
+
+def main(argv: list[str] | None = None) -> None:
+    argv_list = list(sys.argv[1:] if argv is None else argv)
+    if argv_list and argv_list[0] == "dev-run":
+        cmd_dev_run_main(argv_list[1:])
+        return
+
+    args = parse_args(argv_list)
+    project_root = _resolve_project_root(args.project)
 
     structure = describe_project_tree(project_root)
     console.print(
@@ -271,6 +362,9 @@ def main(argv: list[str] | None = None) -> None:
 
     final_output = _format_final_output(user_request, plan, dom_summary, artifacts)
     save_to_file(project_root / "final_output.txt", final_output)
+
+    if not args.no_dev_prompt:
+        _prompt_optional_dev_run(project_root)
 
 
 if __name__ == "__main__":
