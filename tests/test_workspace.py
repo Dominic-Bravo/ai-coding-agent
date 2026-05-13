@@ -7,6 +7,31 @@ from pathlib import Path
 import workspace
 
 
+class TestCollectProjectMarkdownDocs(unittest.TestCase):
+    def test_reads_and_orders_files(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            (root / "z_note.md").write_text("# Z\n- [ ] last\n", encoding="utf-8")
+            (root / "README.md").write_text("# Read\n- [ ] first task\n", encoding="utf-8")
+            (root / "node_modules").mkdir()
+            (root / "node_modules" / "bad.md").write_text("x", encoding="utf-8")
+            text, n = workspace.collect_project_markdown_docs(
+                root, max_files=10, max_total_chars=50_000
+            )
+            self.assertEqual(n, 2)
+            self.assertIn("README.md", text)
+            self.assertIn("z_note.md", text)
+            self.assertNotIn("node_modules", text)
+            self.assertLess(text.index("README.md"), text.index("z_note.md"))
+
+
+class TestExtractTodoLinesFromMarkdown(unittest.TestCase):
+    def test_pulls_list_items(self):
+        bundle = "# TODO\n\n- [ ] One thing\n* Two thing\n3. Three thing\n"
+        lines = workspace.extract_todo_lines_from_markdown(bundle, max_lines=10)
+        self.assertEqual(lines, ["One thing", "Two thing", "Three thing"])
+
+
 class TestDescribeProjectTree(unittest.TestCase):
     def test_lists_files(self):
         with tempfile.TemporaryDirectory() as d:

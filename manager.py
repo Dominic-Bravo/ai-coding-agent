@@ -13,7 +13,12 @@ from rich.panel import Panel
 
 from dev_runner import RunResult, run_dev_command, validate_dev_command
 from llm.provider import GeminiProvider
-from workspace import describe_project_tree, write_files_from_agent_output
+from workspace import (
+    collect_project_markdown_docs,
+    describe_project_tree,
+    extract_todo_lines_from_markdown,
+    write_files_from_agent_output,
+)
 
 console = Console()
 
@@ -86,6 +91,23 @@ def _project_context_block(structure: str) -> str:
     )
 
 
+def _markdown_digest_block(md_bundle: str, *, limit: int = 10_000) -> str:
+    if not md_bundle.strip():
+        return ""
+    if len(md_bundle) <= limit:
+        body = md_bundle
+    else:
+        body = md_bundle[:limit] + "\n… (markdown digest truncated)\n"
+    return f"Project markdown (specs / TODOs / notes):\n{body}\n"
+
+
+def _markdown_docs_for_architect(md_bundle: str) -> str:
+    return (
+        "PROJECT MARKDOWN (read this section FIRST; it may contain specs, TODO lists, or notes):\n"
+        f"{md_bundle}\n"
+    )
+
+
 def _engineer_for_task(
     ai: GeminiProvider,
     *,
@@ -94,9 +116,11 @@ def _engineer_for_task(
     task: str,
     dom_summary: str,
     structure: str,
+    markdown_digest: str,
 ) -> str:
     prompt = (
         f"{_project_context_block(structure)}\n"
+        f"{_markdown_digest_block(markdown_digest)}\n"
         f"{FILE_WRITE_INSTRUCTION}\n\n"
         f"User request:\n{user_request}\n\n"
         f"Architect plan:\n{plan}\n\n"
@@ -115,11 +139,12 @@ def _review(ai: GeminiProvider, *, plan: str, task: str, code: str) -> str:
     )
 
 
-def _apply_fix(ai: GeminiProvider, *, review: str, code: str, structure: str) -> str:
+def _apply_fix(ai: GeminiProvider, *, review: str, code: str, structure: str, markdown_digest: str) -> str:
     return ai.ask(
         "engineer",
         (
             f"{_project_context_block(structure)}\n"
+            f"{_markdown_digest_block(markdown_digest)}\n"
             f"{FILE_WRITE_INSTRUCTION}\n\n"
             f"Fix this code based on these review comments:\n{review}\n\nCode:\n{code}"
         ),
@@ -275,9 +300,13 @@ def main(argv: list[str] | None = None) -> None:
     project_root = _resolve_project_root(args.project)
 
     structure = describe_project_tree(project_root)
+    md_bundle, md_count = collect_project_markdown_docs(project_root)
+    md_digest_for_engineer = md_bundle
+
     console.print(
         Panel(
-            f"[bold]Project:[/bold] {project_root}\n\n"
+            f"[bold]Project:[/bold] {project_root}\n"
+            f"[bold]Markdown files loaded:[/bold] {md_count}\n\n"
             f"[dim]{structure[:4000]}{'…' if len(structure) > 4000 else ''}[/dim]",
             title="Workspace",
             border_style="cyan",
@@ -293,10 +322,13 @@ def main(argv: list[str] | None = None) -> None:
     with console.status("[bold yellow]Architect is planning..."):
         plan = ai.ask(
             "architect",
-            "Plan this project. Prefer TODO items that name concrete relative file paths "
-            "under the project root when possible.\n\n"
+            "Plan this project. When PROJECT MARKDOWN appears below, read it BEFORE you draft your own TODOs. "
+            "Start your answer with a section titled exactly: \"## Alignment with existing notes\" that explains how "
+            "your plan reflects those markdown documents and what is still missing or conflicting with the user request. "
+            "After that section, output a structured Markdown TODO list; prefer items that name concrete relative paths.\n\n"
             f"User request:\n{user_request}\n\n"
-            f"{_project_context_block(structure)}",
+            f"{_project_context_block(structure)}\n\n"
+            f"{_markdown_docs_for_architect(md_bundle)}",
         )
     console.print(Panel(plan, title="Architect's Blueprint", border_style="yellow"))
 
@@ -305,11 +337,24 @@ def main(argv: list[str] | None = None) -> None:
             "dom",
             "In 2–4 short paragraphs, summarize how this project fits typical stack choices "
             "and what the team should watch for. User request:\n"
-            f"{user_request}\n\nPlan:\n{plan}\n\n{structure[:6000]}",
+            f"{user_request}\n\nPlan:\n{plan}\n\n"
+            f"Markdown files loaded from disk for this run: {md_count}.\n\n"
+            f"{structure[:4500]}{'…' if len(structure) > 4500 else ''}\n\n"
+            f"{_markdown_digest_block(md_bundle, limit=4500)}",
         )
     console.print(Panel(dom_summary, title="Dom's summary", border_style="green"))
 
     tasks = parse_plan_tasks(plan)
+    if len(tasks) < 2:
+        extra = extract_todo_lines_from_markdown(md_bundle, max_lines=MAX_TASKS_FROM_PLAN)
+        seen_tasks = set(tasks)
+        for line in extra:
+            if line in seen_tasks:
+                continue
+            seen_tasks.add(line)
+            tasks.append(line)
+            if len(tasks) >= MAX_TASKS_FROM_PLAN:
+                break
     if not tasks:
         tasks = [
             "Implement the architect's plan: main entry point, project layout, "
@@ -326,6 +371,7 @@ def main(argv: list[str] | None = None) -> None:
                 task=task,
                 dom_summary=dom_summary,
                 structure=structure,
+                markdown_digest=md_digest_for_engineer,
             )
         console.print(
             Panel(code, title=f"Engineer — task {idx}/{len(tasks)}", border_style="blue")
@@ -347,7 +393,13 @@ def main(argv: list[str] | None = None) -> None:
 
         if needs_auto_fix(review):
             with console.status(f"[bold magenta]Engineer fix — task {idx}/{len(tasks)}..."):
-                code = _apply_fix(ai, review=review, code=code, structure=structure)
+                code = _apply_fix(
+                    ai,
+                    review=review,
+                    code=code,
+                    structure=structure,
+                    markdown_digest=md_digest_for_engineer,
+                )
             console.print(
                 Panel(
                     code,

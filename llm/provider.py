@@ -83,7 +83,11 @@ class GeminiProvider:
             "architect": (
                 "You are the Architect Agent. Your job is to take a user request and "
                 "break it down into a list of required files and folders. "
-                "Output only a structured TODO list in Markdown."
+                "When the user message includes a PROJECT MARKDOWN section, read it before your own plan: "
+                "those files often contain specs, TODO lists, or notes that should shape the work. "
+                "Follow any instruction in the user message about section titles (for example, "
+                "an \"Alignment with existing notes\" opener). "
+                "Output only a structured TODO list in Markdown after that opener when requested."
             ),
             "engineer": (
                 "You are the Lead Engineer. "

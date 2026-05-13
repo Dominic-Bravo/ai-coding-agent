@@ -25,6 +25,23 @@ _SKIP_DIR_NAMES = frozenset(
     }
 )
 
+_MARKDOWN_SUFFIXES = frozenset({".md", ".markdown"})
+
+# Lines that look like TODO / checklist items inside markdown bodies.
+_MD_TASK_LINE = re.compile(
+    r"^(?:[-*]|\d+\.)\s+(?:\[[ x]\]\s*)?(.+)$",
+    re.IGNORECASE,
+)
+
+
+def _relative_path_is_ignored(rel: Path) -> bool:
+    parts = rel.parts
+    if any(p in _SKIP_DIR_NAMES for p in parts):
+        return True
+    if any(p.endswith(".egg-info") for p in parts):
+        return True
+    return False
+
 # Single-token fence info that is only a path, e.g. ```src/main.py
 _FENCE_INFO_PATH = re.compile(
     r"^[\w./\\-]+\.[A-Za-z0-9]{1,12}$",
@@ -102,7 +119,7 @@ def describe_project_tree(
             if name in _SKIP_DIR_NAMES or name.endswith(".egg-info"):
                 continue
             rel = p.relative_to(root)
-            if any(part in _SKIP_DIR_NAMES for part in rel.parts):
+            if _relative_path_is_ignored(rel):
                 continue
             if p.is_dir():
                 lines.append(f"{prefix}{name}/")
@@ -116,6 +133,115 @@ def describe_project_tree(
     if len(lines) <= 2:
         lines.append("(empty or only ignored entries)")
     return "\n".join(lines)
+
+
+def _markdown_sort_key(path: Path) -> tuple[int, str]:
+    """Prefer README / TODO-style docs first, then path."""
+    n = path.name.lower()
+    pri = 0
+    if n == "readme.md":
+        pri -= 5
+    elif "todo" in n:
+        pri -= 4
+    elif n in ("agents.md", "contributing.md"):
+        pri -= 3
+    elif "spec" in n or n.endswith("_spec.md"):
+        pri -= 2
+    return (pri, str(path).lower())
+
+
+def collect_project_markdown_docs(
+    root: Path,
+    *,
+    max_files: int = 32,
+    max_chars_per_file: int = 14_000,
+    max_total_chars: int = 42_000,
+) -> tuple[str, int]:
+    """
+    Read markdown files under root (skipping ignored dirs) for LLM / TODO context.
+    Returns (bundle_text, number_of_files_included).
+    """
+    root = root.resolve()
+    if not root.is_dir():
+        return ("(Project path is not a directory.)\n", 0)
+
+    candidates: list[Path] = []
+    for p in root.rglob("*"):
+        if not p.is_file():
+            continue
+        try:
+            rel = p.relative_to(root)
+        except ValueError:
+            continue
+        if _relative_path_is_ignored(rel):
+            continue
+        suf = p.suffix.lower()
+        if suf not in _MARKDOWN_SUFFIXES:
+            continue
+        candidates.append(p)
+
+    candidates.sort(key=_markdown_sort_key)
+    candidates = candidates[:max_files]
+
+    parts: list[str] = []
+    total = 0
+    used = 0
+    for p in candidates:
+        try:
+            raw = p.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        rel = p.relative_to(root).as_posix()
+        header = f"\n---\n### Markdown file: {rel}\n\n"
+        chunk = raw
+        if len(chunk) > max_chars_per_file:
+            chunk = chunk[:max_chars_per_file] + "\n\n… (file truncated)\n"
+
+        block = header + chunk
+        remaining = max_total_chars - total
+        if remaining <= len(header) + 32:
+            parts.append(
+                "\n---\n… (markdown bundle truncated; more matching files may exist on disk)\n"
+            )
+            break
+        if len(block) > remaining:
+            keep = max(0, remaining - len(header) - 64)
+            chunk = chunk[:keep] + "\n… (truncated to budget)\n"
+            block = header + chunk
+
+        parts.append(block)
+        total += len(block)
+        used += 1
+
+    if not parts:
+        return ("(No markdown files found under project root.)\n", 0)
+    body = "".join(parts).lstrip("\n")
+    return (body + "\n", used)
+
+
+def extract_todo_lines_from_markdown(markdown_bundle: str, max_lines: int = 20) -> list[str]:
+    """Pull checklist / bullet lines from bundled markdown (e.g. TODO.md)."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in markdown_bundle.splitlines():
+        line = raw.strip()
+        if len(line) < 4:
+            continue
+        if line.startswith("#"):
+            continue
+        if line.startswith(">"):
+            line = line.lstrip("> ").strip()
+        m = _MD_TASK_LINE.match(line)
+        if not m:
+            continue
+        text = m.group(1).strip()
+        if len(text) < 4 or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+        if len(out) >= max_lines:
+            break
+    return out
 
 
 def resolve_safe_path(root: Path, rel: str) -> Path:
