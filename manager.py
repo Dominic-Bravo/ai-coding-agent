@@ -237,6 +237,10 @@ def _prompt_optional_dev_run(project_root: Path) -> None:
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     p = argparse.ArgumentParser(
         description="Multi-agent CLI that can read a project tree and write files into it.",
+        epilog=(
+            "Tip: after `pip install -e .` you can run this tool from any folder as "
+            "`micro-agent -p PATH_TO_YOUR_PROJECT` (or keep using `python manager.py` from the repo clone)."
+        ),
     )
     p.add_argument(
         "-p",

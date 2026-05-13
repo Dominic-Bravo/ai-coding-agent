@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "micro-agent"
+version = "0.1.0"
+description = "Multi-agent CLI coding assistant (Gemini) with project workspace, markdown context, and safe dev-run."
+requires-python = ">=3.10"
+dependencies = [
+    "openai>=1.0",
+    "rich>=13.0",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+micro-agent = "micro_agent.cli:main"
+
+[tool.setuptools]
+packages = ["micro_agent", "llm"]
+py-modules = ["manager", "workspace", "dev_runner"]
