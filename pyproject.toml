@@ -21,4 +21,4 @@ micro-agent = "micro_agent.cli:main"
 
 [tool.setuptools]
 packages = ["micro_agent", "llm"]
-py-modules = ["manager", "workspace", "dev_runner"]
+py-modules = ["manager", "workspace", "dev_runner", "project_session"]

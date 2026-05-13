@@ -13,6 +13,13 @@ from rich.panel import Panel
 
 from dev_runner import RunResult, run_dev_command, validate_dev_command
 from llm.provider import GeminiProvider
+from project_session import (
+    SESSION_DIRNAME,
+    artifacts_to_payload,
+    clear_session,
+    load_session,
+    save_session,
+)
 from workspace import (
     collect_project_markdown_docs,
     describe_project_tree,
@@ -82,6 +89,26 @@ class Artifact:
     task: str
     code: str
     review: str
+
+
+def _artifacts_from_payload(rows: object) -> list[Artifact]:
+    if not isinstance(rows, list):
+        return []
+    out: list[Artifact] = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        try:
+            out.append(
+                Artifact(
+                    task=str(r["task"]),
+                    code=str(r["code"]),
+                    review=str(r["review"]),
+                )
+            )
+        except KeyError:
+            continue
+    return out
 
 
 def _project_context_block(structure: str) -> str:
@@ -250,6 +277,11 @@ def parse_args(argv: list[str] | None) -> argparse.Namespace:
         help="Project directory to scan and write (default: MICRO_AGENT_PROJECT env or cwd).",
     )
     p.add_argument(
+        "--fresh",
+        action="store_true",
+        help="Ignore any saved session in this project folder and start from scratch.",
+    )
+    p.add_argument(
         "--no-dev-prompt",
         action="store_true",
         help="After the agent finishes, do not offer the optional dev-run prompt.",
@@ -302,6 +334,8 @@ def main(argv: list[str] | None = None) -> None:
 
     args = parse_args(argv_list)
     project_root = _resolve_project_root(args.project)
+    if args.fresh:
+        clear_session(project_root)
 
     structure = describe_project_tree(project_root)
     md_bundle, md_count = collect_project_markdown_docs(project_root)
@@ -320,54 +354,109 @@ def main(argv: list[str] | None = None) -> None:
     ai = GeminiProvider()
 
     console.print(Panel("[bold magenta]Multi-Agent Coding System Active[/bold magenta]"))
+    console.print(
+        f"[dim]Session memory for this run is stored only under "
+        f"[cyan]{project_root / SESSION_DIRNAME}[/cyan] (not shared with other folders).[/dim]"
+    )
 
-    user_request = console.input("[bold cyan]What project are we building today? [/bold cyan]")
+    session_data = load_session(project_root)
+    resume = False
+    if session_data and session_data.get("status") == "in_progress":
+        tlist = list(session_data.get("tasks") or [])
+        arts_raw = session_data.get("artifacts") or []
+        if tlist and len(arts_raw) < len(tlist):
+            when = session_data.get("updated_at", "unknown time")
+            goal = str(session_data.get("user_request", ""))[:400]
+            console.print(
+                Panel(
+                    f"[bold]Last saved (UTC):[/bold] {when}\n"
+                    f"[bold]Progress:[/bold] {len(arts_raw)}/{len(tlist)} tasks\n"
+                    f"[bold]Goal:[/bold]\n{goal}",
+                    title="Saved session in this project",
+                    border_style="magenta",
+                )
+            )
+            ans = console.input(
+                "[yellow]Resume where you left off? [Y/n] [/yellow]"
+            ).strip().lower()
+            resume = ans in ("", "y", "yes")
+            if not resume:
+                clear_session(project_root)
 
-    with console.status("[bold yellow]Architect is planning..."):
-        plan = ai.ask(
-            "architect",
-            "Plan this project. When PROJECT MARKDOWN appears below, read it BEFORE you draft your own TODOs. "
-            "Start your answer with a section titled exactly: \"## Alignment with existing notes\" that explains how "
-            "your plan reflects those markdown documents and what is still missing or conflicting with the user request. "
-            "After that section, output a structured Markdown TODO list; prefer items that name concrete relative paths.\n\n"
-            f"User request:\n{user_request}\n\n"
-            f"{_project_context_block(structure)}\n\n"
-            f"{_markdown_docs_for_architect(md_bundle)}",
+    if resume and session_data:
+        user_request = str(session_data["user_request"])
+        plan = str(session_data["plan"])
+        dom_summary = str(session_data["dom_summary"])
+        tasks = list(session_data["tasks"])
+        artifacts = _artifacts_from_payload(session_data.get("artifacts", []))
+        console.print(
+            Panel(
+                f"Resuming at task [bold]{len(artifacts) + 1}[/bold] of [bold]{len(tasks)}[/bold]. "
+                f"Folder tree and markdown were refreshed for this run.",
+                title="Continuing session",
+                border_style="green",
+            )
         )
-    console.print(Panel(plan, title="Architect's Blueprint", border_style="yellow"))
+    else:
+        user_request = console.input("[bold cyan]What project are we building today? [/bold cyan]")
 
-    with console.status("[bold green]Dom is summarizing for the team..."):
-        dom_summary = ai.ask(
-            "dom",
-            "In 2–4 short paragraphs, summarize how this project fits typical stack choices "
-            "and what the team should watch for. User request:\n"
-            f"{user_request}\n\nPlan:\n{plan}\n\n"
-            f"Markdown files loaded from disk for this run: {md_count}.\n\n"
-            f"{structure[:4500]}{'…' if len(structure) > 4500 else ''}\n\n"
-            f"{_markdown_digest_block(md_bundle, limit=4500)}",
+        with console.status("[bold yellow]Architect is planning..."):
+            plan = ai.ask(
+                "architect",
+                "Plan this project. When PROJECT MARKDOWN appears below, read it BEFORE you draft your own TODOs. "
+                "Start your answer with a section titled exactly: \"## Alignment with existing notes\" that explains how "
+                "your plan reflects those markdown documents and what is still missing or conflicting with the user request. "
+                "After that section, output a structured Markdown TODO list; prefer items that name concrete relative paths.\n\n"
+                f"User request:\n{user_request}\n\n"
+                f"{_project_context_block(structure)}\n\n"
+                f"{_markdown_docs_for_architect(md_bundle)}",
+            )
+        console.print(Panel(plan, title="Architect's Blueprint", border_style="yellow"))
+
+        with console.status("[bold green]Dom is summarizing for the team..."):
+            dom_summary = ai.ask(
+                "dom",
+                "In 2–4 short paragraphs, summarize how this project fits typical stack choices "
+                "and what the team should watch for. User request:\n"
+                f"{user_request}\n\nPlan:\n{plan}\n\n"
+                f"Markdown files loaded from disk for this run: {md_count}.\n\n"
+                f"{structure[:4500]}{'…' if len(structure) > 4500 else ''}\n\n"
+                f"{_markdown_digest_block(md_bundle, limit=4500)}",
+            )
+        console.print(Panel(dom_summary, title="Dom's summary", border_style="green"))
+
+        tasks = parse_plan_tasks(plan)
+        if len(tasks) < 2:
+            extra = extract_todo_lines_from_markdown(md_bundle, max_lines=MAX_TASKS_FROM_PLAN)
+            seen_tasks = set(tasks)
+            for line in extra:
+                if line in seen_tasks:
+                    continue
+                seen_tasks.add(line)
+                tasks.append(line)
+                if len(tasks) >= MAX_TASKS_FROM_PLAN:
+                    break
+        if not tasks:
+            tasks = [
+                "Implement the architect's plan: main entry point, project layout, "
+                "and the minimum code needed to satisfy the user request."
+            ]
+
+        artifacts = []
+        save_session(
+            project_root,
+            user_request=user_request,
+            plan=plan,
+            dom_summary=dom_summary,
+            tasks=tasks,
+            artifacts=artifacts_to_payload(artifacts),
+            status="in_progress",
         )
-    console.print(Panel(dom_summary, title="Dom's summary", border_style="green"))
 
-    tasks = parse_plan_tasks(plan)
-    if len(tasks) < 2:
-        extra = extract_todo_lines_from_markdown(md_bundle, max_lines=MAX_TASKS_FROM_PLAN)
-        seen_tasks = set(tasks)
-        for line in extra:
-            if line in seen_tasks:
-                continue
-            seen_tasks.add(line)
-            tasks.append(line)
-            if len(tasks) >= MAX_TASKS_FROM_PLAN:
-                break
-    if not tasks:
-        tasks = [
-            "Implement the architect's plan: main entry point, project layout, "
-            "and the minimum code needed to satisfy the user request."
-        ]
-
-    artifacts: list[Artifact] = []
-    for idx, task in enumerate(tasks, start=1):
-        with console.status(f"[bold blue]Engineer — task {idx}/{len(tasks)}..."):
+    for i in range(len(artifacts), len(tasks)):
+        task_num = i + 1
+        task = tasks[i]
+        with console.status(f"[bold blue]Engineer — task {task_num}/{len(tasks)}..."):
             code = _engineer_for_task(
                 ai,
                 user_request=user_request,
@@ -378,25 +467,25 @@ def main(argv: list[str] | None = None) -> None:
                 markdown_digest=md_digest_for_engineer,
             )
         console.print(
-            Panel(code, title=f"Engineer — task {idx}/{len(tasks)}", border_style="blue")
+            Panel(code, title=f"Engineer — task {task_num}/{len(tasks)}", border_style="blue")
         )
 
         written, errs = write_files_from_agent_output(project_root, code)
         _print_write_results(written, errs)
 
-        with console.status(f"[bold red]Reviewer — task {idx}/{len(tasks)}..."):
+        with console.status(f"[bold red]Reviewer — task {task_num}/{len(tasks)}..."):
             review = _review(ai, plan=plan, task=task, code=code)
 
         console.print(
             Panel(
                 review,
-                title=f"Review — task {idx}/{len(tasks)}",
+                title=f"Review — task {task_num}/{len(tasks)}",
                 border_style="red",
             )
         )
 
         if needs_auto_fix(review):
-            with console.status(f"[bold magenta]Engineer fix — task {idx}/{len(tasks)}..."):
+            with console.status(f"[bold magenta]Engineer fix — task {task_num}/{len(tasks)}..."):
                 code = _apply_fix(
                     ai,
                     review=review,
@@ -407,7 +496,7 @@ def main(argv: list[str] | None = None) -> None:
             console.print(
                 Panel(
                     code,
-                    title=f"Refined code — task {idx}/{len(tasks)}",
+                    title=f"Refined code — task {task_num}/{len(tasks)}",
                     border_style="green",
                 )
             )
@@ -415,6 +504,25 @@ def main(argv: list[str] | None = None) -> None:
             _print_write_results(written, errs)
 
         artifacts.append(Artifact(task=task, code=code, review=review))
+        save_session(
+            project_root,
+            user_request=user_request,
+            plan=plan,
+            dom_summary=dom_summary,
+            tasks=tasks,
+            artifacts=artifacts_to_payload(artifacts),
+            status="in_progress",
+        )
+
+    save_session(
+        project_root,
+        user_request=user_request,
+        plan=plan,
+        dom_summary=dom_summary,
+        tasks=tasks,
+        artifacts=artifacts_to_payload(artifacts),
+        status="completed",
+    )
 
     final_output = _format_final_output(user_request, plan, dom_summary, artifacts)
     save_to_file(project_root / "final_output.txt", final_output)
