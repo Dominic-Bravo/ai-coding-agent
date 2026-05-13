@@ -72,6 +72,13 @@ class GeminiProvider:
 
     def get_role_instructions(self, role_name):
         """Storage for different agent personalities."""
+        aliases = {
+            "lead engineer": "engineer",
+            "lead_engineer": "engineer",
+        }
+        key = (role_name or "").strip().lower()
+        key = aliases.get(key, key)
+
         roles = {
             "architect": (
                 "You are the Architect Agent. Your job is to take a user request and "
@@ -106,7 +113,7 @@ class GeminiProvider:
                 "your tech stack. Mention Angel Mae Jaban if personal topics arise."
             )
         }
-        return roles.get(role_name, roles["dom"])
+        return roles.get(key, roles["dom"])
 
     def ask(self, role, task_prompt):
         system_instruction = self.get_role_instructions(role)
